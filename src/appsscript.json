@@ -1,0 +1,39 @@
+{
+	"timeZone": "Australia/Brisbane",
+	"runtimeVersion": "V8",
+	"dependencies": {
+		"enabledAdvancedServices": [
+			{
+				"userSymbol": "Calendar",
+				"serviceId": "calendar",
+				"version": "v3"
+			}
+		]
+	},
+	"oauthScopes": [
+		"https://www.googleapis.com/auth/calendar.readonly",
+		"https://www.googleapis.com/auth/calendar.addons.execute",
+		"https://www.googleapis.com/auth/script.external_request"
+	],
+	"addOns": {
+		"common": {
+			"name": "Moceanic Calendar Checker",
+			"logoUrl": "https://www.moceanic.com/wp-content/uploads/2016/03/logo.png",
+			"homepageTrigger": {
+				"runFunction": "onHomepage",
+				"enabled": true
+			},
+			"universalActions": [
+				{
+					"label": "Decline Summary",
+					"runFunction": "onHomepage"
+				}
+			]
+		},
+		"calendar": {
+			"eventOpenTrigger": {
+				"runFunction": "onEventOpen"
+			}
+		}
+	}
+}
