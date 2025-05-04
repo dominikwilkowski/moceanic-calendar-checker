@@ -15,7 +15,7 @@ const RANGE_DAYS = {
 /**
  * UI: Called whenever the user opens the add-on’s sidebar or clicks our icon
  */
-function onHomepage(e) {
+function onHomepage(_) {
 	return buildHomepageCard('3M');
 }
 
@@ -55,14 +55,14 @@ function buildHomepageCard(rangeKey, debugMsg) {
 		.setHeader('👥 Clients')
 		.addWidget(CardService.newTextParagraph().setText('Click a client to see their sessions<br><br>'));
 
-	clients.forEach(({ name, topic, attendees, organization }) => {
+	clients.forEach(({ name, topic, attendees, organization, events }) => {
 		clientsSection.addWidget(
 			CardService.newTextButton()
-				.setText(organization)
+				.setText(`(${events}) ${organization}`)
 				.setOnClickAction(
 					CardService.newAction()
 						.setFunctionName('showClientDetails')
-						.setParameters({ name, topic, organization, timeMin, timeMax })
+						.setParameters({ name, topic, organization, attendees: JSON.stringify(attendees), timeMin, timeMax })
 				)
 		);
 	});
@@ -73,12 +73,13 @@ function buildHomepageCard(rangeKey, debugMsg) {
 /**
  * UI: client detail page
  */
-function showClientDetails(event) {
-	const { name, topic, organization } = event.parameters;
+function showClientDetails(event, timeMin, timeMax) {
+	const { name, topic, attendees, organization } = event.parameters;
+	const attendeesList = attendees ? JSON.parse(attendees) : [];
 	const now = new Date();
 	const past = [];
 	const future = [];
-	const events = fetchEventsForOrganization(organization);
+	const events = fetchEventsForOrganization(organization, timeMin, timeMax);
 
 	events.forEach(evt => {
 		const start = new Date(evt.start.dateTime || evt.start.date);
@@ -91,25 +92,36 @@ function showClientDetails(event) {
 		.addSection(
 			CardService.newCardSection()
 				.setHeader('Details')
-				.addWidget(CardService.newTextParagraph().setText(`Topic: ${topic}<br>Name: ${name}`))
+				.addWidget(
+					CardService.newTextParagraph().setText(
+						`Topic: ${topic}<br>Name: ${name}<br>Attendees: ${attendeesList.length}<br>Events: ${past.length + future.length}`
+					)
+				)
+		)
+		.addSection(
+			CardService.newCardSection()
+				.setHeader(`<b>ATTENDEES</b> (${attendeesList.length})`)
+				.setCollapsible(true)
+				.addWidget(
+					CardService.newTextParagraph().setText(
+						`${attendeesList.map(({ name, email }) => (name != email ? `${name} (${email})` : `${email}`)).join('<br>')}`
+					)
+				)
 		);
 
 	[
 		{
-			section: CardService.newCardSection().setHeader('<b>PAST SESSIONS</b>'),
+			section: CardService.newCardSection().setHeader(`<b>PAST EVENTS</b> (${past.length})`),
 			list: past
 		},
 		{
-			section: CardService.newCardSection().setHeader('<b>FUTURE SESSIONS</b>'),
+			section: CardService.newCardSection().setHeader(`<b>FUTURE EVENTS</b> (${future.length})`),
 			list: future
 		}
 	].forEach(group => {
-		group.section.addWidget(CardService.newKeyValue().setTopLabel('Sessions').setContent(group.list.length.toString()));
-		let collapsibleSection = CardService.newCardSection()
-			.setHeader('Events')
-			.setCollapsible(group.list.length > 0);
+		group.section.setCollapsible(group.list.length > 0);
 		group.list.forEach(evt => {
-			collapsibleSection.addWidget(
+			group.section.addWidget(
 				CardService.newTextButton()
 					.setText(evt.summary)
 					.setOpenLink(CardService.newOpenLink().setUrl(evt.htmlLink).setOpenAs(CardService.OpenAs.FULL_SIZE))
@@ -117,9 +129,9 @@ function showClientDetails(event) {
 		});
 
 		if (group.list.length == 0) {
-			collapsibleSection.addWidget(CardService.newDecoratedText().setText(`- No events found -`));
+			group.section.addWidget(CardService.newDecoratedText().setText(`- No events found -`));
 		}
-		card.addSection(group.section).addSection(collapsibleSection);
+		card.addSection(group.section);
 	});
 
 	return card.build();
@@ -142,32 +154,29 @@ function onTimeRangeChange(e) {
  */
 function fetchAllClients(timeMin, timeMax) {
 	const cal = Calendar.Events;
+
 	const events =
 		cal.list('primary', {
 			singleEvents: true,
 			timeMin,
 			timeMax,
-			orderBy: 'startTime'
+			orderBy: 'startTime',
+			q: PREFIX
 		}).items || [];
 
 	const clients = {};
 	events.forEach(event => {
+		let { topic, organization, name } = parseEventSummary(event.summary);
+		clients[name] = clients[name] || { name, topic, organization, events: 0, attendees: [] };
 		(event.attendees || []).forEach(attendee => {
-			if (!attendee.self && attendee.responseStatus !== 'resource' && (event.summary || '').startsWith('C+ ')) {
-				let { topic, organization, name } = parseEventSummary(event.summary);
-
-				if (clients[name]) {
-					clients[name].attendees.push({ email: [attendee.email], name: attendee.displayName || attendee.email });
-				} else {
-					clients[name] = {
-						name,
-						topic,
-						attendees: [{ email: [attendee.email], name: attendee.displayName || attendee.email }],
-						organization
-					};
-				}
+			if (!attendee.self && attendee.responseStatus !== 'resource' && (event.summary || '').startsWith(PREFIX)) {
+				clients[name].attendees.push({
+					email: attendee.email,
+					name: attendee.displayName || attendee.email
+				});
 			}
 		});
+		clients[name].events++;
 	});
 
 	return Object.values(clients).sort((a, b) => a.name.localeCompare(b.name));
@@ -178,7 +187,8 @@ function fetchAllClients(timeMin, timeMax) {
  */
 function parseEventSummary(summary) {
 	if (!summary.startsWith(PREFIX)) {
-		throw new Error(`Invalid format: missing "${PREFIX}" prefix`);
+		console.error(`Invalid format: missing "${PREFIX}" prefix`);
+		return { topic: '-', organization: '-', name: '-' };
 	}
 
 	const content = summary.slice(PREFIX.length);
@@ -186,7 +196,8 @@ function parseEventSummary(summary) {
 	const lastSep = content.lastIndexOf(SEPARATOR);
 
 	if (firstSep < 0 || lastSep < 0 || firstSep === lastSep) {
-		throw new Error(`Invalid format: expected two "${SEPARATOR}" separators`);
+		console.error(`Invalid format: expected two "${SEPARATOR}" separators`);
+		return { topic: '-', organization: '-', name: '-' };
 	}
 
 	const topic = content.slice(0, firstSep).trim();
@@ -199,17 +210,14 @@ function parseEventSummary(summary) {
 /**
  * Helper: fetch all events for a given client email
  */
-function fetchEventsForClient(email) {
+function fetchEventsForClient(email, timeMin, timeMax) {
 	const cal = Calendar.Events;
-	const now = new Date();
-	const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString();
-	const oneYearAhead = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
 	return (
 		cal.list('primary', {
 			singleEvents: true,
-			timeMin: oneYearAgo,
-			timeMax: oneYearAhead,
+			timeMin,
+			timeMax,
 			orderBy: 'startTime',
 			q: email
 		}).items || []
@@ -219,17 +227,14 @@ function fetchEventsForClient(email) {
 /**
  * Helper: fetch all events for a given organization
  */
-function fetchEventsForOrganization(organization) {
+function fetchEventsForOrganization(organization, timeMin, timeMax) {
 	const cal = Calendar.Events;
-	const now = new Date();
-	const oneYearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString();
-	const oneYearAhead = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
 	const items =
 		cal.list('primary', {
 			singleEvents: true,
-			timeMin: oneYearAgo,
-			timeMax: oneYearAhead,
+			timeMin,
+			timeMax,
 			orderBy: 'startTime',
 			q: organization
 		}).items || [];
